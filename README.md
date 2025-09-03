@@ -14,19 +14,33 @@ mvn clean package
 
 ## Usage
 ```bash
-# Basic OCR (with informative verbose mode)
+# Basic OCR - generates all formats by default (JSON, XHTML, SVG, TXT)
+java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar image.jpg
+
+# Verbose mode with informative output
 java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar -v image.jpg
 
 # Custom output files
-java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar --json output.json --svg output.svg --text output.txt image.jpg 
+java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar --json output.json --svg output.svg --xhtml output.xhtml --text output.txt image.jpg 
+
+# Only specific formats (disable defaults)
+java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar --no-defaults --xhtml document.xhtml image.jpg
 
 # Confidence filtering and verbose output
 java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar --min-confidence 0.8 --verbose image.jpg 
 ```
 
+### Default Output Files
+When no specific output files are specified, the tool generates:
+- `image.jpg.oneocr.txt` - Plain text
+- `image.jpg.oneocr.json` - JSON with metadata  
+- `image.jpg.oneocr.xhtml` - XHTML format
+- `image.jpg.oneocr.svg` - SVG visualization
+
 ## Features
 - JSON export with metadata
 - SVG visualization with bounding boxes
+- Semantic XHTML5 output (see [format analysis](XHTML-Format-Analysis.md) for AI processing advantages)
 - Plain text extraction
 - Command-line interface
 
@@ -39,6 +53,16 @@ java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools
 - GraalVM native executable version is planned for future releases to simplify deployment, eliminate JDK dependency.
 - To use this, you must first build the api module. We DO NOT provide pre-build jars or exes.
 
-## Related
-- **API**: [xyz-jphil-win11_oneocr-api](https://github.com/xyz-jphil/xyz-jphil-win11_oneocr-api) (includes one-ocr dlls packaged).
-- **Original**: [win11-oneocr](https://github.com/b1tg/win11-oneocr)
+## Related Projects
+- **API Module**: [xyz-jphil-win11_oneocr-api](https://github.com/xyz-jphil/xyz-jphil-win11_oneocr-api) - Core Java FFM bindings and native libraries
+- **XHTML Presentation**: [win11_oneocr_semantic_xhtml](https://github.com/xyz-jphil/win11_oneocr_semantic_xhtml) - Interactive CSS/JS for XHTML format
+- **Original Research**: [win11-oneocr](https://github.com/b1tg/win11-oneocr) - Initial reverse engineering of Windows 11 OneOCR
+
+## Project Ecosystem
+```
+xyz-jphil-win11_oneocr-api (Core FFM bindings)
+    ↓
+xyz-jphil-win11_oneocr-tools (Command-line tools) → Generates XHTML
+    ↓
+win11_oneocr_semantic_xhtml (Presentation layer) → Renders XHTML
+```

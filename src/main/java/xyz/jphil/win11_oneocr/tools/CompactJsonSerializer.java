@@ -1,8 +1,10 @@
 package xyz.jphil.win11_oneocr.tools;
 
+import static java.lang.Integer.parseInt;
 import xyz.jphil.win11_oneocr.*;
 import org.json.*;
 import java.util.*;
+import static xyz.jphil.win11_oneocr.OcrWord.ocrWord;
 
 /**
  * Creates ultra-compact JSON output for OCR results using org.json
@@ -22,22 +24,31 @@ public class CompactJsonSerializer {
         var root = new JSONObject();
         
         // Create metadata record
-        var wordCount = result.lines().stream().mapToInt(l -> l.words().size()).sum();
-        var metadata = OcrMetadata.create(imageFile, imageWidth, imageHeight, result.lines().size(), wordCount);
+        var metadata = OcrMetadata.create(imageFile, imageWidth, imageHeight, result);
+        
+        var metrics = new JSONObject()
+            .put("linesCount", metadata.metrics().linesCount())
+            .put("wordsCount", metadata.metrics().wordsCount())
+            .put("averageOcrConfidence", metadata.metrics().averageOcrConfidence())
+            .put("highConfWordsRatio", metadata.metrics().highConfWordsRatio())
+            .put("mediumConfWordsRatio", metadata.metrics().mediumConfWordsRatio())
+            .put("lowConfWordsRatio", metadata.metrics().lowConfWordsRatio())
+        ;
         
         // Metadata section (named properties)
         var meta = new JSONObject()
         .put("file", metadata.file())
-        .put("size", new JSONArray().put(metadata.size()[0]).put(metadata.size()[1]))
+        .put("imgSize", metadata.width()+"x"+metadata.height())
         .put("timestampUTCISO", metadata.timestampUTCISO())
-        .put("lines", metadata.lines())
-        .put("words", metadata.words());
+        // .put("plainText", result.text()) // Commented out to reduce file size - didn't improve AI comprehension
+        .put("metrics", metrics);
         root.put("meta", meta);
         
         // Document-level text angle
         root.put("angle", formatNumber(result.textAngle()));
         
-        // Ultra-compact lines bounds: each line is [bounds, [words...]]
+        // Ultra-compact linesCount bounds: each line is [bounds, [wordsCount...]]
+        int totalIndx = 0;
         var linesArray = new JSONArray();
         for (var line : result.lines()) {
             var lineArray = new JSONArray();
@@ -49,13 +60,14 @@ public class CompactJsonSerializer {
                 lineArray.put(JSONObject.NULL);
             }
             
-            // Words bounds: [[text,conf,bounds],...]
+            // Words bounds: [[#index,text,confidence,llmCorrection,bounds],...]
             var wordsArray = new JSONArray();
             for (var word : line.words()) {
                 var wordArray = new JSONArray();
+                wordArray.put("#"+totalIndx); totalIndx++;
                 wordArray.put(word.text());
                 wordArray.put(formatConfidence(word.confidence()));
-                
+                wordArray.put("");//empty llm corrected word
                 if (word.boundingBox() != null) {
                     wordArray.put(createBoundsArray(word.boundingBox()));
                 } else {
@@ -111,29 +123,33 @@ public class CompactJsonSerializer {
         
         // Parse metadata into OcrMetadata record
         var metaJson = root.getJSONObject("meta");
-        var sizeArray = metaJson.getJSONArray("size");
-        var metadata = new OcrMetadata(
-            metaJson.getString("file"),
-            new int[]{sizeArray.getInt(0), sizeArray.getInt(1)},
-            metaJson.getString("timestampUTCISO"),
-            metaJson.getInt("lines"),
-            metaJson.getInt("words")
-        );
+        var sizeStr = metaJson.getString("imgSize");
+        int imgWidth = -1, imgHeight = -1;
+        if(sizeStr!=null && !sizeStr.isBlank()){
+            try {
+                var a = sizeStr.split("x");
+                imgWidth = parseInt(a[0]);
+                imgHeight = parseInt(a[1]);
+            } catch (Exception e) {
+            }
+        }
+        var metrics = metaJson.getJSONObject("metrics");
+        
         
         // Parse angle
         var angle = root.getDouble("angle");
         
-        // Parse lines bounds
+        // Parse linesCount bounds
         var linesArray = root.getJSONArray("lines");
         var lines = new ArrayList<OcrLine>();
         
         for (int i = 0; i < linesArray.length(); i++) {
-            var lineArray = linesArray.getJSONArray(i);
+            var line_A = linesArray.getJSONArray(i);
             
             // Parse line bounds (first element, can be null)
             BoundingBox lineBounds = null;
-            if (!lineArray.isNull(0)) {
-                var bnds = lineArray.getJSONArray(0);
+            if (!line_A.isNull(0)) {
+                var bnds = line_A.getJSONArray(0);
                 lineBounds = new BoundingBox(
                     bnds.getDouble(0), bnds.getDouble(1),
                     bnds.getDouble(2), bnds.getDouble(3),
@@ -142,20 +158,20 @@ public class CompactJsonSerializer {
                 );
             }
             
-            // Parse words bounds (second element)
-            var wordsArray = lineArray.getJSONArray(1);
+            // Parse wordsCount bounds (second element)
+            var wordsArray = line_A.getJSONArray(1);
             var words = new ArrayList<OcrWord>();
             
             for (int j = 0; j < wordsArray.length(); j++) {
-                var wordArray = wordsArray.getJSONArray(j);
-                
-                var text = wordArray.getString(0);
-                var confidence = wordArray.getDouble(1);
-                
+                var word_A = wordsArray.getJSONArray(j);
+                //int totalIndx = extractWordIndex(word_A.getString(0)); // not used
+                var text = word_A.getString(1);
+                var confidence = word_A.getDouble(2);
+                var llmCorrection = word_A.getString(3);
                 // Parse word bounds (third element, can be null)
                 BoundingBox wordBounds = null;
-                if (!wordArray.isNull(2)) {
-                    var bnds = wordArray.getJSONArray(2);
+                if (!word_A.isNull(4)) {
+                    var bnds = word_A.getJSONArray(4);
                     wordBounds = new BoundingBox(
                         bnds.getDouble(0), bnds.getDouble(1),
                         bnds.getDouble(2), bnds.getDouble(3),
@@ -164,10 +180,10 @@ public class CompactJsonSerializer {
                     );
                 }
                 
-                words.add(new OcrWord(text, wordBounds, confidence));
+                words.add(ocrWord(text, wordBounds, confidence, llmCorrection));
             }
             
-            // Reconstruct line text from words
+            // Reconstruct line text from wordsCount
             var lineText = words.stream()
                 .map(OcrWord::text)
                 .reduce("", (a, b) -> a.isEmpty() ? b : a + " " + b);
@@ -175,13 +191,32 @@ public class CompactJsonSerializer {
             lines.add(new OcrLine(lineText, lineBounds, words));
         }
         
-        // Reconstruct full text from all lines
+        // Reconstruct full text from all linesCount
         var fullText = lines.stream()
             .map(OcrLine::text)
             .reduce("", (a, b) -> a.isEmpty() ? b : a + "\n" + b);
+        var result = new OcrResult(fullText, angle, lines);
         
-        return new OcrJsonFile(metadata, 
-                new OcrResult(fullText, angle, lines));
+        var metadata = new OcrMetadata(
+            metaJson.getString("file"),
+            imgWidth, imgHeight,
+            metaJson.getString("timestampUTCISO"),
+            metaJson.getString("text"),
+            new OcrMetrics(result)
+        );
+        return new OcrJsonFile(metadata, result);
+                
+    }
+    
+    private static int extractWordIndex(String s){
+        if(s==null || s.isBlank() || s.length()<2 || s.charAt(0)!='#'){
+            return -1;
+        }
+        try {
+            return Integer.parseInt(s.substring(1));
+        } catch (Exception e) {
+        }
+        return -1;
     }
 
 }

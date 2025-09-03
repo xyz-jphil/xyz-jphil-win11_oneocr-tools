@@ -1,1 +1,0 @@
-@java --enable-native-access=ALL-UNNAMED -jar target/xyz-jphil-win11_oneocr-tools-1.0.jar %*

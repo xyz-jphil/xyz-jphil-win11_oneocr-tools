@@ -1,6 +1,5 @@
 package xyz.jphil.win11_oneocr.tools;
 
-import xyz.jphil.win11_oneocr.tools.folder.FolderOcrCommand;
 import xyz.jphil.win11_oneocr.tools.pdf.PdfOcrCommand;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -11,8 +10,6 @@ import xyz.jphil.win11_oneocr.*;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.Callable;
 
@@ -62,59 +59,9 @@ public class OcrTool implements Callable<Integer> {
     @Option(names = {"--min-confidence"}, description = "Minimum confidence threshold (0.0-1.0)", defaultValue = "0.0")
     private double minConfidence;
 
-    @Option(names = {"--threads"}, description = "Number of OCR threads for parallel processing (default: 1)", defaultValue = "1")
-    private int threads;
-    
-    public int getThreads() {
-        return threads;
-    }
-
     public static void main(String[] args) {
-        // Set up UTF-8 console for proper emoji display
-        setupUtf8Console();
-        
-        // Suppress logging noise from various sources
-        suppressLoggingNoise();
-        
         int exitCode = new CommandLine(new OcrTool()).execute(args);
         System.exit(exitCode);
-    }
-    
-    private static void suppressLoggingNoise() {
-        // Suppress logback startup noise
-        System.setProperty("logback.configurationFile", "logback-silent.xml");
-        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "error");
-        
-        // Aggressively suppress Java Util Logging (used by PDFBox)
-        try {
-            // Turn off all PDFBox logging
-            java.util.logging.Logger.getLogger("org.apache.pdfbox").setLevel(java.util.logging.Level.OFF);
-            java.util.logging.Logger.getLogger("org.apache.pdfbox.contentstream").setLevel(java.util.logging.Level.OFF);
-            java.util.logging.Logger.getLogger("org.apache.pdfbox.contentstream.PDFStreamEngine").setLevel(java.util.logging.Level.OFF);
-            java.util.logging.Logger.getLogger("org.apache.pdfbox.pdmodel").setLevel(java.util.logging.Level.OFF);
-            java.util.logging.Logger.getLogger("org.apache.pdfbox.pdmodel.font").setLevel(java.util.logging.Level.OFF);
-            java.util.logging.Logger.getLogger("org.apache.pdfbox.rendering").setLevel(java.util.logging.Level.OFF);
-            
-            // Set root JUL logger to only show severe errors and remove all handlers
-            java.util.logging.Logger rootLogger = java.util.logging.Logger.getLogger("");
-            rootLogger.setLevel(java.util.logging.Level.SEVERE);
-            
-            // Remove all handlers from root logger to prevent output
-            for (java.util.logging.Handler handler : rootLogger.getHandlers()) {
-                rootLogger.removeHandler(handler);
-            }
-            
-        } catch (Exception e) {
-            // Silently continue if logging suppression fails
-        }
-    }
-    
-    private static void setupUtf8Console() {
-        // Use the Windows Console Unicode Output library for reliable Unicode support
-        var result = xyz.jphil.windows_console_set_unicode_output.WindowsConsoleSetUnicodeOutput.enable();
-        
-        // The library handles all the complexity and fails gracefully on non-Windows systems
-        // No need to handle the result - it's designed to work silently
     }
 
     @Override
@@ -134,12 +81,7 @@ public class OcrTool implements Callable<Integer> {
 
             // Validate input file
             if (!inputFile.exists()) {
-                progress.err("Input file does not exist");
-                return 1;
-            }
-
-            if (!inputFile.canRead()) {
-                progress.err("Cannot read input file");
+                System.err.println("Error: Input file does not exist: " + inputFile);
                 return 1;
             }
 
@@ -151,23 +93,24 @@ public class OcrTool implements Callable<Integer> {
             }
 
             progress.inc();
-            log.debug("IMAGE", String.format("Loaded: %dx%d pixels", image.getWidth(), image.getHeight()));
-            log.step("OCR", "Initializing engine");
-            
             byte[] bgraData = convertToBGRA(image);
             
+            log.debug("IMAGE", String.format("Loaded: %dx%d pixels", image.getWidth(), image.getHeight()));
+            log.step("OCR", "Initializing engine");
+
             // Perform OCR
             OcrResult result;
             try (var ocrApi = new OneOcrApi()) {
-                log.step("OCR", "Running recognition");
-                
                 var initOptions = ocrApi.createInitOptions();
                 var pipeline = ocrApi.createPipeline(initOptions);
                 var processOptions = ocrApi.createProcessOptions(maxLines);
-                
+
+                log.step("OCR", "Running recognition");
+
                 result = ocrApi.recognizeImage(pipeline, processOptions, 
                     image.getWidth(), image.getHeight(), bgraData);
-                    
+
+                // Cleanup
                 processOptions.close();
                 pipeline.close();
                 initOptions.close();
@@ -177,28 +120,32 @@ public class OcrTool implements Callable<Integer> {
             log.success("OCR", String.format("Completed: %d lines, %d words found", 
                 result.lines().size(), 
                 result.lines().stream().mapToInt(l -> l.words().size()).sum()));
-            
+            }
+
             // Filter by confidence if specified
-            if (minConfidence > 0) {
+            if (minConfidence > 0.0) {
                 result = filterByConfidence(result, minConfidence);
                 log.debug("FILTER", String.format("Confidence >%.2f: %d lines, %d words", 
                     minConfidence, result.lines().size(), 
                     result.lines().stream().mapToInt(l -> l.words().size()).sum()));
             }
 
-            // Determine output files
-            File actualTextFile = !noDefaults || textFile != null ? 
-                (textFile != null ? textFile : getDefaultOutputFile("txt")) : null;
-            File actualJsonFile = jsonFile;
+            // Determine output files (use defaults if not specified and not disabled)
+            File actualTextFile = textFile;
+            File actualJsonFile = jsonFile;  
             File actualXhtmlFile = xhtmlFile;
             File actualSvgFile = svgFile;
             
-            if (!noDefaults && actualJsonFile == null && actualXhtmlFile == null && actualTextFile == null) {
-                actualJsonFile = getDefaultOutputFile("json");
-                actualXhtmlFile = getDefaultOutputFile("xhtml");
-            }
-            
-            if (svgFile != null || (!noDefaults && svgFile == null)) {
+            if (!noDefaults) {
+                if (actualTextFile == null) {
+                    actualTextFile = getDefaultOutputFile("txt");
+                }
+                if (actualJsonFile == null) {
+                    actualJsonFile = getDefaultOutputFile("json");
+                }
+                if (actualXhtmlFile == null) {
+                    actualXhtmlFile = getDefaultOutputFile("xhtml");
+                }
                 if (actualSvgFile == null) {
                     actualSvgFile = getDefaultOutputFile("svg");
                 }
@@ -212,7 +159,7 @@ public class OcrTool implements Callable<Integer> {
                 outputCompactJson(result, actualJsonFile, image.getWidth(), image.getHeight(), log);
             }
             if (actualXhtmlFile != null) {
-                outputSemanticXhtml(result, actualXhtmlFile, image.getWidth(), image.getHeight(), log);
+                outputSemanticXHtml(result, actualXhtmlFile, image.getWidth(), image.getHeight(), log);
             }
             if (actualSvgFile != null) {
                 generateSvg(result, actualSvgFile, image.getWidth(), image.getHeight());
@@ -220,8 +167,7 @@ public class OcrTool implements Callable<Integer> {
             }
             
             // Fallback to stdout if no outputs specified
-            if (outputFile == null && actualTextFile == null && actualJsonFile == null && 
-                actualXhtmlFile == null && actualSvgFile == null) {
+            if (actualTextFile == null && actualJsonFile == null && actualXhtmlFile == null && actualSvgFile == null) {
                 outputStructuredText(result);
             }
 
@@ -261,34 +207,38 @@ public class OcrTool implements Callable<Integer> {
         output.append(String.format("Words: %d%n", result.lines().stream().mapToInt(l -> l.words().size()).sum()));
         
         if (result.textAngle() != 0) {
-            output.append(String.format("Text angle: %.2f degrees%n", result.textAngle()));
+            output.append(String.format("Text angle: %.1f degrees%n", result.textAngle()));
         }
-        
-        output.append("\n=== Text Content ===\n");
-        
-        for (var line : result.lines()) {
-            output.append(line.text()).append("\n");
-            
-            if (showConfidence || verbose) {
-                // Line confidence not available in current API
-                
-                if (showConfidence && verbose) {
-                    for (var word : line.words()) {
-                        output.append(String.format("    %s (%.3f)%n", word.text(), word.confidence()));
-                    }
+        output.append("\n");
+
+        for (int i = 0; i < result.lines().size(); i++) {
+            OcrLine line = result.lines().get(i);
+            output.append(String.format("Line %d: \"%s\"%n", i + 1, line.text()));
+
+            if (showConfidence && !line.words().isEmpty()) {
+                output.append("  Words: ");
+                for (OcrWord word : line.words()) {
+                    output.append(String.format("\"%s\"(%.2f) ", word.text(), word.confidence()));
                 }
+                output.append("\n");
             }
-            
+
             if (line.boundingBox() != null && verbose) {
                 BoundingBox bbox = line.boundingBox();
                 output.append(String.format("  Bounds: (%.0f,%.0f)-(%.0f,%.0f)%n",
                     Math.min(bbox.x1(), bbox.x4()), Math.min(bbox.y1(), bbox.y2()),
-                    Math.max(bbox.x1(), bbox.x4()), Math.max(bbox.y1(), bbox.y2())));
+                    Math.max(bbox.x2(), bbox.x3()), Math.max(bbox.y3(), bbox.y4())));
             }
+            output.append("\n");
         }
-        
-        System.out.print(output);
+
+        if (outputFile != null) {
+            Files.writeString(outputFile.toPath(), output.toString());
+        } else {
+            System.out.print(output.toString());
+        }
     }
+
 
     private void outputCompactJson(OcrResult result, File compactJsonFile, int imageWidth, int imageHeight, LogFormatter log) throws Exception {
         var compactJson = CompactJsonSerializer.toCompactJson(result, inputFile.toPath().getFileName().toString(), imageWidth, imageHeight);
@@ -297,7 +247,7 @@ public class OcrTool implements Callable<Integer> {
         log.success("OUTPUT", String.format("JSON: %s (%d bytes)", compactJsonFile.getName(), compactJson.length()));
     }
 
-    private void outputSemanticXhtml(OcrResult result, File xhtmlFile, int imageWidth, int imageHeight, LogFormatter log) throws Exception {
+    private void outputSemanticXHtml(OcrResult result, File xhtmlFile, int imageWidth, int imageHeight, LogFormatter log) throws Exception {
         String xhtml = OcrToSemanticXHtml.toXHtml(result, inputFile.toPath().getFileName().toString(), imageWidth, imageHeight);
         Files.writeString(xhtmlFile.toPath(), xhtml);
         
@@ -310,35 +260,65 @@ public class OcrTool implements Callable<Integer> {
     }
 
     private OcrResult filterByConfidence(OcrResult result, double minConfidence) {
-        // Note: Individual line confidence filtering not available in current API
-        // Returning original result for now
-        var filteredLines = result.lines();
-            
-        return new OcrResult(
-            filteredLines.stream()
-                .map(OcrLine::text)
-                .reduce("", (a, b) -> a + (a.isEmpty() ? "" : "\n") + b),
-            result.textAngle(),
-            filteredLines
-        );
+        var filteredLines = result.lines().stream()
+            .map(line -> {
+                var filteredWords = line.words().stream()
+                    .filter(word -> word.confidence() >= minConfidence)
+                    .toList();
+                
+                if (filteredWords.isEmpty()) {
+                    return null;
+                }
+                
+                String filteredText = filteredWords.stream()
+                    .map(OcrWord::text)
+                    .reduce((a, b) -> a + " " + b)
+                    .orElse("");
+                
+                return new OcrLine(filteredText, line.boundingBox(), filteredWords);
+            })
+            .filter(line -> line != null)
+            .toList();
+
+        String filteredFullText = filteredLines.stream()
+            .map(OcrLine::text)
+            .reduce((a, b) -> a + "\n" + b)
+            .orElse("");
+
+        return new OcrResult(filteredFullText, result.textAngle(), filteredLines);
     }
 
     public static byte[] convertToBGRA(BufferedImage image) {
         int width = image.getWidth();
         int height = image.getHeight();
         byte[] bgraData = new byte[width * height * 4];
-        
-        int index = 0;
+
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int rgb = image.getRGB(x, y);
-                bgraData[index++] = (byte) (rgb & 0xFF);        // Blue
-                bgraData[index++] = (byte) ((rgb >> 8) & 0xFF);  // Green  
-                bgraData[index++] = (byte) ((rgb >> 16) & 0xFF); // Red
-                bgraData[index++] = (byte) ((rgb >> 24) & 0xFF); // Alpha
+                int offset = (y * width + x) * 4;
+
+                int alpha = (rgb >> 24) & 0xFF;
+                int red = (rgb >> 16) & 0xFF;
+                int green = (rgb >> 8) & 0xFF;
+                int blue = rgb & 0xFF;
+
+                bgraData[offset] = (byte) blue;
+                bgraData[offset + 1] = (byte) green;
+                bgraData[offset + 2] = (byte) red;
+                bgraData[offset + 3] = (byte) alpha;
             }
         }
-        
+
         return bgraData;
+    }
+
+    private String escapeJson(String text) {
+        if (text == null) return "";
+        return text.replace("\\", "\\\\")
+                  .replace("\"", "\\\"")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r")
+                  .replace("\t", "\\t");
     }
 }

@@ -108,6 +108,13 @@ public class StandardOutputTest {
         Files.writeString(textPath, text);
         System.out.printf("✓ Plain text: %s (%d chars)%n", 
             textPath.getFileName(), text.length());
+        
+        // Semantic XHTML with default naming
+        String xhtml = OcrToSemanticXHtml.toXHtml(result, testImagePath.getFileName().toString(), width, height);
+        Path xhtmlPath = outputDir.resolve(baseName + ".oneocr.xhtml");
+        Files.writeString(xhtmlPath, xhtml);
+        System.out.printf("✓ Semantic XHTML: %s (%d bytes)%n", 
+            xhtmlPath.getFileName(), xhtml.length());
     }
     
     private byte[] convertToBGRA(BufferedImage image) {
